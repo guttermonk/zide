@@ -48,7 +48,7 @@
 source "${ZIDE_DIR}/bin/lib/getEditorCommand.sh"
 
 read -r -d '' HELP_TEXT << EOF
-Usage: $(basename "$0") [OPTIONS] <path>...
+Usage: zide-edit [OPTIONS] <path>...
 
 Parameters:
   <path>...              List of paths to open in the \`$EDITOR\` pane.

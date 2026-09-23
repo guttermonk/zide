@@ -48,6 +48,45 @@ Then add the `bin/` directory to your `PATH`.
 export PATH="$PATH:$HOME/.config/zide/bin"
 ```
 
+### Nix / NixOS
+
+This repo is a flake, so it can be used directly as an input. The package wraps
+every script with `zellij`, `yazi`, `bash` and `coreutils` appended to `PATH`
+(appended, not prepended, so your own versions still win) and sets `ZIDE_DIR`
+explicitly, so nothing depends on where the files happen to land.
+
+```nix
+{
+  inputs.zide.url = "github:guttermonk/zide";
+
+  # ...
+  environment.systemPackages = [ inputs.zide.packages.${system}.default ];
+  # or, with the overlay:
+  nixpkgs.overlays = [ inputs.zide.overlays.default ];
+}
+```
+
+Configure it with `.override` rather than by copying files over the result --
+the store is read-only, and anything you copy in gets clobbered on the next
+update:
+
+```nix
+inputs.zide.packages.${system}.default.override {
+  # directory holding yazi.toml / keymap.toml / theme.toml for the picker pane
+  yaziConfigDir = ./my-yazi-config;
+  # directory of .kdl layouts, used instead of the bundled ones
+  layoutDir = ./my-layouts;
+  defaultLayout = "compact";
+  # anything else the panes should be able to run
+  extraRuntimeInputs = [ pkgs.lazygit pkgs.helix ];
+}
+```
+
+These map onto the `ZIDE_USE_YAZI_CONFIG`, `ZIDE_LAYOUT_DIR` and
+`ZIDE_DEFAULT_LAYOUT` variables documented under [Configuration](#configuration),
+but baked into the wrapper so they do not depend on the environment a login
+shell happens to have set up.
+
 ### Dependencies
 
 This project integrates [`zellij`](https://zellij.dev) with a file picker of your choosing and an editor, and so you'll need these installed for any of this to work (if no specific file picker is set, it defaults to [`yazi`](https://yazi-rs.github.io)).

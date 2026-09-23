@@ -3,7 +3,7 @@
 source "${ZIDE_DIR}/bin/lib/findLayoutConfig.sh"
 
 read -r -d '' HELP_TEXT << EOF
-Usage: $(basename "$0") [OPTIONS] <working_dir>
+Usage: zide-pick [OPTIONS] <working_dir>
 
 Optional Parameters:
 	<working_dir>         Optionally specify a working directory to open the file
