@@ -70,13 +70,22 @@ stdenvNoCC.mkDerivation {
     install -Dm644 README.md "$out/share/doc/zide/README.md"
     install -Dm644 LICENSE "$out/share/doc/zide/LICENSE"
 
-    # wrapProgram renames each script to .<name>-wrapped alongside itself, which
-    # keeps bin/ directly under $out where the scripts expect it. (makeWrapper's
-    # --argv0 is no help for the rename showing up in --help output: these are
-    # #! scripts, so the kernel replaces argv[0] with the script path and $0 is
-    # the wrapped name regardless. The usage strings name themselves instead.)
+    # Wrap by moving the real scripts to libexec/ under the same names, rather
+    # than with wrapProgram, which would rename them to .<name>-wrapped in
+    # place. Linux takes a process's comm from the basename of the file it
+    # execs, so that rename is visible: `ps` shows ".zide-wrapped", and anything
+    # keying off the process name stops recognising zide. (A taskbar mapping the
+    # terminal's foreground process to an icon is a real example.) Keeping the
+    # name means bin/zide and libexec/zide both give comm "zide".
+    #
+    # makeWrapper's --argv0 does not solve this, and neither would it fix the
+    # name in --help: these are #! scripts, so the kernel discards the caller's
+    # argv[0] and substitutes the script path.
+    mkdir -p "$out/libexec"
     for script in "$out"/bin/zide*; do
-      wrapProgram "$script" ${wrapperArgs}
+      name="$(basename "$script")"
+      mv "$script" "$out/libexec/$name"
+      makeWrapper "$out/libexec/$name" "$out/bin/$name" ${wrapperArgs}
     done
 
     runHook postInstall
