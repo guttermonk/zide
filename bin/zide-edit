@@ -1,4 +1,49 @@
 #!/usr/bin/env bash
+#
+# Open paths in zide's editor pane.
+#
+# This drives the editor by injecting keystrokes into its pane. It used to send
+# them as four separate `zellij action` processes:
+#
+#   zellij action focus-next-pane
+#   zellij action write 27                     # <Escape>
+#   zellij action write-chars ":open <paths>"
+#   zellij action write 13                     # <Enter>
+#
+# Each of those is its own client, connecting to the zellij server over its own
+# socket, and the server makes no ordering promise across connections. Under
+# load they get serviced out of order: the <Enter> lands before write-chars has
+# finished, the editor executes an empty command line, its completion popup
+# flashes and closes, and the file never opens. Opening the same file a second
+# time appears to work only because the second run is warm, which is what made
+# this look intermittent rather than broken.
+#
+# Two changes remove the race:
+#
+#   * The command line -- ":open <paths>" and its <Enter> -- goes out as ONE
+#     write-chars, so the byte order arriving at the pane is structural rather
+#     than lucky. <Escape> deliberately stays a separate action; see the comment
+#     at the bottom of this file for why folding it in silently breaks opening.
+#
+#     This also retires the `sleep $(... | bc -l)` pause that used to sit
+#     between the cd and open commands. It guarded the wrong gap -- nothing
+#     paused between write-chars and <Enter>, which is where the ordering
+#     actually failed -- and it silently did nothing at all wherever bc is not
+#     installed, because `sleep $(empty)` errors and continues with no delay.
+#     Both commands now ride one ordered payload, so no pause is needed and the
+#     bc dependency is gone.
+#
+#   * Focus is resolved with `zellij action list-clients` instead of assuming
+#     the editor is wherever focus-next-pane happens to land. A query fired
+#     straight after focus-next-pane can still be answered from before it took
+#     effect, so the change is polled for rather than trusted on first reply.
+#
+#     list-clients also reports the focused pane's id, so the write is then
+#     addressed with `--pane-id` and does not depend on focus at all. Focus is
+#     still moved to the editor, because that is what zide is for.
+#
+#     Both are capability-detected: on a zellij without list-clients this falls
+#     back to the previous focus-next-pane assumption and an unaddressed write.
 
 source "${ZIDE_DIR}/bin/lib/getEditorCommand.sh"
 
@@ -55,36 +100,152 @@ while [[ $# -gt 0 ]]; do
 done
 
 paths=("$@")
-# Ensure paths with special chars (like spaces) are properly escaped
+editor="${ZIDE_ORIGINAL_EDITOR:-${EDITOR}}"
+
+# Escape paths for the editor's command line. printf %q is safe to hand to helix
+# and the vim family here: in a UTF-8 locale it backslash-escapes the separators
+# and leaves printable multibyte characters alone. (It only falls back to
+# $'...', which no editor command line understands, for non-printable bytes or
+# under a C locale.)
 escaped_paths=()
 for path in "${paths[@]}"; do
   escaped_paths+=("$(printf "%q" "$path")")
 done
-path=${escaped_paths[0]}
 
-# Focus editor pane, must be the next pane after yazi
-zellij action focus-next-pane
+# Prints "<pane_id> <command>" for the pane the attached client has focused,
+# with any leading path stripped from the command. Only the first row is
+# consulted: with more than one client attached there is no way to tell which
+# row is ours, and one client is the normal case. Fails if zellij will not
+# answer, which is how a zellij without list-clients is detected.
+focused_pane() {
+  local client pane rest
+  {
+    read -r _ || return 1
+    while read -r client pane rest; do
+      [[ -n "${client}" ]] || continue
+      rest="${rest%% *}"
+      printf '%s %s' "${pane}" "${rest##*/}"
+      return 0
+    done
+  } < <(zellij action list-clients 2>/dev/null)
+  return 1
+}
 
-# If we're trying to open a single path and it's a directory, change the working dir to it in our
-# editor. This ensures any other commands in our editor (such as :open, :mv, etc) have the correct
-# cwd set.
-if [ ! -f "${path}" ] && [ ${#escaped_paths[@]} -eq 1 ]; then
-  cdCommand="$(getEditorCommand $ZIDE_ORIGINAL_EDITOR cd)"
-	zellij action write 27 # send <Escape> key to enter NORMAL mode
-	zellij action write-chars ":${cdCommand} ${path}"
-	zellij action write 13 # send <Enter> key
+# Prints the focused pane once it differs from $1. focus-next-pane is
+# fire-and-forget on its own connection, so a query issued straight after it can
+# be serviced first and hand back the pane we were already on. That stale answer
+# is indistinguishable from "focus did not move", so it has to be polled out
+# rather than trusted on the first reply.
+#   0 = focus moved, new pane printed
+#   1 = focus never moved
+#   2 = zellij would not answer
+wait_for_focus_change() {
+  local previous="$1" current i
+  for ((i = 0; i < 20; i++)); do
+    current="$(focused_pane)" || return 2
+    if [[ "${current}" != "${previous}" ]]; then
+      printf '%s' "${current}"
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
 
-	# The longer the path string, the longer we need to wait so that zellij has time to write out
-	# the path before moving on. Through some trial and error, I found that dividing the length by
-	# 150 gives it sufficient time to get through it. Calculating this based on string length vs
-	# a static value makes sure we don't end up with a long wait time for short paths that don't
-	# need to wait as long.
-	sleep $(echo "${#path} / 150" | bc -l)
+# Cycle focus until the editor pane holds it. Sets editor_pane_id on success.
+#   0 = editor pane is focused, confirmed
+#   1 = cycled every pane without finding it
+#   2 = zellij would not say, so the caller falls back to the old assumption
+#
+# Giving up stops on arrival back at the pane we started from, so a failure
+# leaves focus where the user left it. The iteration cap is only a backstop for
+# the case where some other pane reports the same command name as the starting
+# one and the wrap is detected early -- we abort either way.
+focus_editor() {
+  local want="${editor##*/}" start current i rc
+
+  start="$(focused_pane)" || return 2
+  current="${start}"
+
+  for ((i = 0; i < 12; i++)); do
+    if [[ "${current#* }" == "${want}" ]]; then
+      editor_pane_id="${current%% *}"
+      return 0
+    fi
+
+    zellij action focus-next-pane
+    current="$(wait_for_focus_change "${current}")"
+    rc=$?
+    [[ ${rc} -eq 2 ]] && return 2
+    [[ ${rc} -eq 1 ]] && return 1
+
+    # Back where we started: every pane has been looked at.
+    [[ "${current}" == "${start}" ]] && return 1
+  done
+
+  return 1
+}
+
+editor_pane_id=""
+
+focus_editor
+case $? in
+  0) ;;
+  2)
+    # Cannot verify; fall back to assuming the editor is the next pane.
+    zellij action focus-next-pane
+    ;;
+  *)
+    # Deliberately no fallback write. A stray ":open /some/path" typed into a
+    # shell pane is worse than the file not opening.
+    echo "zide-edit: no pane running '${editor##*/}' found; refusing to type into another pane." >&2
+    exit 1
+    ;;
+esac
+
+if [[ ${#paths[@]} -eq 0 ]]; then
+  exit 0
 fi
 
-# Open paths in the editor
-if [[ -n "${escaped_paths}" ]]; then
-	zellij action write 27 # send <Escape> key to enter NORMAL mode
-	zellij action write-chars ":$(getEditorCommand $ZIDE_ORIGINAL_EDITOR ${command}) ${escaped_paths[*]}"
-	zellij action write 13 # send <Enter> key
+cr=$'\r'
+sequence=""
+
+# If we're trying to open a single path and it's a directory, change the working
+# dir to it in our editor. This ensures any other commands in our editor (such
+# as :open, :mv, etc) have the correct cwd set.
+#
+# This used to test `! -f` against the printf %q-escaped path rather than the
+# real one, so any filename containing a space or a quote failed the test and
+# took this branch too, sending ":cd <a regular file>" ahead of every such open.
+if [[ ${#paths[@]} -eq 1 && -d "${paths[0]}" ]]; then
+  sequence+=":$(getEditorCommand "${editor}" cd) ${escaped_paths[0]}${cr}"
+fi
+
+sequence+=":$(getEditorCommand "${editor}" "${command}") ${escaped_paths[*]}${cr}"
+
+# <Escape> has to travel as its own action, NOT folded into the payload below.
+# A terminal input parser tells the Escape key apart from the start of an escape
+# sequence by what follows it: an ESC byte with ":" directly behind it in the
+# same write reads as Alt+:, which helix discards, and nothing opens at all.
+# Alone, with a pause behind it, it is the Escape key. Verified against a live
+# helix -- ESC+":" in one write-chars does nothing; ":open <path>\r" by itself
+# opens the file.
+#
+# Splitting it back out does not reopen the ordering bug this file exists to
+# fix. Escape goes first and the entire command line follows as one payload, so
+# either service order works out: in order, Escape returns the editor to normal
+# mode and the command runs; reversed, the command runs and the late Escape
+# lands harmlessly in normal mode. What must not be split is the command line
+# itself, and that is now indivisible.
+#
+# --pane-id addresses the editor directly, so delivery does not depend on focus:
+# nothing that moves focus after the check above can misdirect the keystrokes.
+if [[ -n "${editor_pane_id}" ]]; then
+  zellij action write --pane-id "${editor_pane_id}" 27
+  sleep 0.05
+  zellij action write-chars --pane-id "${editor_pane_id}" "${sequence}"
+else
+  zellij action write 27
+  sleep 0.05
+  zellij action write-chars "${sequence}"
 fi

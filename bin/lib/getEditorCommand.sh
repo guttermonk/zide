@@ -6,7 +6,12 @@
 #   Where <editor> is the name of your text editor (defaults to $EDITOR) and
 #   <command> is the command to perform (open, hsplit, vsplit).
 
-source "${ZIDE_DIR}/tmp/env"
+# Nothing writes tmp/env any more -- the writer went away with
+# ZIDE_EDITOR_CMD_MODE/ZIDE_EDITOR_CD_CMD and only this read was left behind.
+# Sourcing it unconditionally puts a "No such file or directory" on stderr on
+# every single open, and ZIDE_DIR is read-only in some installs (nix, /usr/local),
+# so the file cannot simply be created either.
+[ -f "${ZIDE_DIR}/tmp/env" ] && source "${ZIDE_DIR}/tmp/env"
 
 # Mapping of common editors and their commands
 declare -A commands=(
