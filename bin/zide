@@ -135,6 +135,35 @@ else
   # panes defined in the layout, so instead we'll use pushd to change the working dir before
   # starting zellij, and change it back when we exit
   pushd $cwd > /dev/null
-    zellij --layout "${layout_path}"
+    # A name means "open or resume this session", not "always build a new one".
+    #
+    # --help has always said -n names the session when starting from outside
+    # zellij, and the code never did it: it ran a bare `zellij`, so every launch
+    # got a random name. Naming it is half the fix. The other half is what to do
+    # when the name is already taken -- zellij refuses outright ("Session with
+    # name X already exists. Use attach command...") and nothing opens, which
+    # would turn a second `zide -n notes` into an error where it used to open a
+    # window. So: attach when it is live, which is almost certainly what someone
+    # reopening a named project wants, and is the semantic tmux gives `new -A`.
+    #
+    # A dead entry is deleted rather than resurrected. Resurrection re-runs the
+    # layout's commands without the environment zide exports for them
+    # (ZIDE_DIR, the picker config, the editor wrapper), so a fresh start is
+    # both more predictable and no slower.
+    #
+    # On a zellij too old for `list-sessions --no-formatting` the lookup comes
+    # back empty and this falls through to creating, which is the old behaviour.
+    if [ -n "${name}" ]; then
+      existing="$(zellij list-sessions --no-formatting 2>/dev/null | awk -v n="${name}" '$1 == n { print; exit }')"
+
+      if [ -n "${existing}" ] && ! printf '%s' "${existing}" | grep -q 'EXITED'; then
+        zellij attach "${name}"
+      else
+        [ -n "${existing}" ] && zellij delete-session "${name}" --force > /dev/null 2>&1
+        zellij --session "${name}" --new-session-with-layout "${layout_path}"
+      fi
+    else
+      zellij --layout "${layout_path}"
+    fi
   popd > /dev/null
 fi
