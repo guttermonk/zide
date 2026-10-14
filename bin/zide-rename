@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 read -r -d '' HELP_TEXT << EOF
-Usage: $(basename "$0") <name>
+Usage: zide-rename <name>
 
 Parameters:
   <name>                Layout to use from this project's \`layouts/\` directory

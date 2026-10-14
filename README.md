@@ -1,5 +1,13 @@
 # `zide`: A Zellij IDE-like Layout Environment
 
+> **A fork of [josephschmitt/zide](https://github.com/josephschmitt/zide).** What is different here:
+>
+> - **Packaged as a Nix flake** — `flake.nix` and `package.nix`, scripts wrapped with their own `PATH`, and `ZIDE_DIR` taken from the environment when a packager sets it. See [Nix / NixOS](#nix--nixos).
+> - **Files open on the first attempt** — `zide-edit` sends the editor command line as one ordered write and resolves the editor pane with `list-clients` and `--pane-id`, instead of assuming it is wherever focus lands next.
+> - **Collapsible picker** — `Alt+]` collapses the file picker to a sliver, `Alt+[` brings it back, via a `collapsed` swap layout.
+> - **An `ide_layout`** — picker beside an editor-over-shell split.
+> - **Quiet on read-only installs** — `tmp/env` is sourced only when it exists, rather than putting an error on stderr at every open.
+
 Zide is a combination of [Zellij](https://zellij.dev) layouts and convenience `bash` scripts that creates an IDE-like layout environment. It mainly consists of a file picker (such as `yazi`) in one pane, and your editor of choice in the main pane. You can browse the file tree in your picker pane, and then any files that are selected or opened do so in the editor's pane.
 
 ![zide screenshot](https://github.com/user-attachments/assets/2aca061b-0fe2-4c09-993d-cc48b00ef260)
@@ -47,6 +55,45 @@ Then add the `bin/` directory to your `PATH`.
 # Add this to your shell profile
 export PATH="$PATH:$HOME/.config/zide/bin"
 ```
+
+### Nix / NixOS
+
+This repo is a flake, so it can be used directly as an input. The package wraps
+every script with `zellij`, `yazi`, `bash` and `coreutils` appended to `PATH`
+(appended, not prepended, so your own versions still win) and sets `ZIDE_DIR`
+explicitly, so nothing depends on where the files happen to land.
+
+```nix
+{
+  inputs.zide.url = "github:guttermonk/zide";
+
+  # ...
+  environment.systemPackages = [ inputs.zide.packages.${system}.default ];
+  # or, with the overlay:
+  nixpkgs.overlays = [ inputs.zide.overlays.default ];
+}
+```
+
+Configure it with `.override` rather than by copying files over the result --
+the store is read-only, and anything you copy in gets clobbered on the next
+update:
+
+```nix
+inputs.zide.packages.${system}.default.override {
+  # directory holding yazi.toml / keymap.toml / theme.toml for the picker pane
+  yaziConfigDir = ./my-yazi-config;
+  # directory of .kdl layouts, used instead of the bundled ones
+  layoutDir = ./my-layouts;
+  defaultLayout = "compact";
+  # anything else the panes should be able to run
+  extraRuntimeInputs = [ pkgs.lazygit pkgs.helix ];
+}
+```
+
+These map onto the `ZIDE_USE_YAZI_CONFIG`, `ZIDE_LAYOUT_DIR` and
+`ZIDE_DEFAULT_LAYOUT` variables documented under [Configuration](#configuration),
+but baked into the wrapper so they do not depend on the environment a login
+shell happens to have set up.
 
 ### Dependencies
 

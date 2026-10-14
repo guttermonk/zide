@@ -7,10 +7,14 @@ else
   script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 fi
 
-export ZIDE_DIR=$(dirname "$script_dir")
+# Honour a ZIDE_DIR set by a packager. Resolving it from $0 is right when zide
+# is run from a checkout, but it breaks as soon as bin/zide is a wrapper or a
+# launcher that rewrites argv[0] -- the path no longer points at the install.
+# A package that knows where it put its files can just say so.
+export ZIDE_DIR="${ZIDE_DIR:-$(dirname "$script_dir")}"
 
 read -r -d '' HELP_TEXT << EOF
-Usage: $(basename "$0") [OPTIONS] <working_dir> <layout>
+Usage: zide [OPTIONS] <working_dir> <layout>
 
 Optional Parameters:
   <working_dir>        Working directory to open in, defaults to `pwd`
