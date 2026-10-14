@@ -44,6 +44,12 @@
 #
 #     Both are capability-detected: on a zellij without list-clients this falls
 #     back to the previous focus-next-pane assumption and an unaddressed write.
+#
+#   * A floating picker is handled rather than refused. focus-next-pane cycles
+#     within the floating panes only, so from a floating picker the editor is
+#     unreachable and the open used to be declined. Hiding the floating panes
+#     puts focus back in the tiled layout, where the search works -- see
+#     retry_without_floating_panes below.
 
 source "${ZIDE_DIR}/bin/lib/getEditorCommand.sh"
 
@@ -57,6 +63,7 @@ Options:
   -h, --help             Show this help message and exit.
   -c, --command          How to open files in your \`$EDITOR\`.
                          (One of open, hsplit, or vsplit).
+  -l, --line             Line to jump to after opening, for a single path.
 
 Description:
   Handles reading in a list of paths from stdin and uses Zellij's action
@@ -71,6 +78,10 @@ show_help() {
 # Command to perform on the paths, available commands will be based on your editor
 command="open"
 
+# Line to jump to after opening, set by --line. Empty leaves the cursor wherever
+# the editor puts it.
+line=""
+
 # Parse command-line options
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,6 +95,15 @@ while [[ $# -gt 0 ]]; do
         shift 2
       else
         echo "Error: --command requires a non-empty value."
+        exit 1
+      fi
+      ;;
+    -l|--line)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        line="$2"
+        shift 2
+      else
+        echo "Error: --line requires a non-empty value."
         exit 1
       fi
       ;;
@@ -141,13 +161,13 @@ focused_pane() {
 #   2 = zellij would not answer
 wait_for_focus_change() {
   local previous="$1" current i
-  for ((i = 0; i < 20; i++)); do
+  for ((i = 0; i < 8; i++)); do
     current="$(focused_pane)" || return 2
     if [[ "${current}" != "${previous}" ]]; then
       printf '%s' "${current}"
       return 0
     fi
-    sleep 0.05
+    sleep 0.025
   done
   return 1
 }
@@ -186,22 +206,108 @@ focus_editor() {
   return 1
 }
 
+# Where the editor pane id is remembered, per zellij session.
+pane_cache="${XDG_RUNTIME_DIR:-/tmp}/zide-editor-pane.${ZELLIJ_SESSION_NAME:-nosession}"
+
+# Reuse the pane found last time.
+#
+# Discovery is the expensive half of this script: cycling focus costs a zellij
+# round trip per pane plus the poll that confirms the move, and from a floating
+# pane the first cycle cannot reach the tiled layout at all, so the entire
+# budget is spent before the retry below even starts. Measured on a four-pane
+# zide tab: 0.27s from the tiled shell pane, 3.8s from a floating one. The
+# answer does not change for the life of the session.
+#
+# The id is confirmed before it is trusted, and that is the whole point: zellij
+# hands out pane ids from a counter and panes come and go, so a remembered id
+# could by then belong to a shell -- and ":open <path>" typed into a shell is
+# exactly what the rest of this file refuses to risk.
+#
+#   0 = cache hit, editor_pane_id set and focused
+#   1 = nothing usable, fall through to discovery
+focus_cached_editor() {
+  local id current i
+  [[ -r "${pane_cache}" ]] || return 1
+  read -r id < "${pane_cache}" || return 1
+  [[ -n "${id}" ]] || return 1
+
+  zellij action focus-pane-id "${id}" >/dev/null 2>&1 || return 1
+
+  # Polled for the same reason the focus-change wait is: a query issued straight
+  # after a focus action can still be answered from before it took effect.
+  for ((i = 0; i < 8; i++)); do
+    current="$(focused_pane)" || return 1
+    if [[ "${current%% *}" == "${id}" ]]; then
+      [[ "${current#* }" == "${editor##*/}" ]] || return 1
+      editor_pane_id="${id}"
+      return 0
+    fi
+    sleep 0.025
+  done
+
+  return 1
+}
+
 editor_pane_id=""
 
-focus_editor
-case $? in
-  0) ;;
-  2)
-    # Cannot verify; fall back to assuming the editor is the next pane.
-    zellij action focus-next-pane
-    ;;
-  *)
-    # Deliberately no fallback write. A stray ":open /some/path" typed into a
-    # shell pane is worse than the file not opening.
-    echo "zide-edit: no pane running '${editor##*/}' found; refusing to type into another pane." >&2
-    exit 1
-    ;;
-esac
+# Second attempt for a floating picker, which is the one layout focus_editor
+# cannot search: zellij cycles focus within the floating panes, so from a
+# floating picker focus-next-pane never reaches the tiled editor, every poll
+# reports "focus did not move", and the open is declined. Hiding the floating
+# panes drops focus back into the tiled layout, where the ordinary search works.
+#
+# They are deliberately left hidden. Picking a file is the point at which you
+# are done with the picker, so this doubles as the collapse you would otherwise
+# reach for; zellij's ToggleFloatingPanes brings it straight back.
+#
+# Only ever reached after the ordinary search has already failed, so a tiled
+# picker -- every default layout -- never touches floating state, and a lazygit
+# float or any other floating pane is left alone unless the editor was genuinely
+# unreachable without doing so.
+#
+# toggle-floating-panes, not the hide-floating-panes that reads like the right
+# call: hide-floating-panes resolves "the active tab" from an attached client,
+# and a CLI action is not one. Run without --tab-id it answers "Tab not found"
+# and fails, from inside a pane of the session as readily as from outside it.
+# Toggle takes no tab and is what zellij's own ToggleFloatingPanes keybind runs.
+# Toggling is safe here because this is only reached with the floating picker
+# visible -- it is the pane that called us.
+#
+#   0 = editor pane is focused, confirmed
+#   1 = still not found, or this zellij cannot toggle floating panes
+#   2 = zellij would not say
+retry_without_floating_panes() {
+  zellij action toggle-floating-panes >/dev/null 2>&1 || return 1
+  focus_editor
+}
+
+if ! focus_cached_editor; then
+  focus_editor
+  rc=$?
+
+  if [[ ${rc} -eq 1 ]]; then
+    retry_without_floating_panes
+    rc=$?
+  fi
+
+  case ${rc} in
+    0)
+      # Remembered for the next open in this session. A failure to write is not
+      # worth reporting: the only cost is doing the search again.
+      printf '%s\n' "${editor_pane_id}" > "${pane_cache}" 2>/dev/null || true
+      ;;
+    2)
+      # Cannot verify; fall back to assuming the editor is the next pane.
+      zellij action focus-next-pane
+      ;;
+    *)
+      # Deliberately no fallback write. A stray ":open /some/path" typed into a
+      # shell pane is worse than the file not opening.
+      echo "zide-edit: no pane running '${editor##*/}' found; refusing to type into another pane." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 if [[ ${#paths[@]} -eq 0 ]]; then
   exit 0
@@ -222,6 +328,21 @@ if [[ ${#paths[@]} -eq 1 && -d "${paths[0]}" ]]; then
 fi
 
 sequence+=":$(getEditorCommand "${editor}" "${command}") ${escaped_paths[*]}${cr}"
+
+# Jump to the line a caller asked for, when there is one and a single path to
+# apply it to.
+#
+# Deliberately not routed through getEditorCommand: that table maps a verb to
+# whatever the editor calls it, and here the editors disagree about more than
+# the name -- helix has a `goto` command, in the vim family the command IS the
+# number, and kakoune takes the line as an argument to `edit`. An editor that is
+# not listed gets no jump rather than a guess typed into its command line.
+if [[ -n "${line}" && ${#paths[@]} -eq 1 ]]; then
+  case "${editor##*/}" in
+    hx|helix) sequence+=":goto ${line}${cr}" ;;
+    vim|nvim) sequence+=":${line}${cr}" ;;
+  esac
+fi
 
 # <Escape> has to travel as its own action, NOT folded into the payload below.
 # A terminal input parser tells the Escape key apart from the start of an escape

@@ -1,5 +1,13 @@
 # `zide`: A Zellij IDE-like Layout Environment
 
+> **A fork of [josephschmitt/zide](https://github.com/josephschmitt/zide).** What is different here:
+>
+> - **Packaged as a Nix flake** — `flake.nix` and `package.nix`, scripts wrapped with their own `PATH`, and `ZIDE_DIR` taken from the environment when a packager sets it. See [Nix / NixOS](#nix--nixos).
+> - **Files open on the first attempt** — `zide-edit` sends the editor command line as one ordered write and resolves the editor pane with `list-clients` and `--pane-id`, instead of assuming it is wherever focus lands next.
+> - **Collapsible picker** — `Alt+]` collapses the file picker to a sliver, `Alt+[` brings it back, via a `collapsed` swap layout.
+> - **An `ide_layout`** — picker beside an editor-over-shell split.
+> - **Quiet on read-only installs** — `tmp/env` is sourced only when it exists, rather than putting an error on stderr at every open.
+
 Zide is a combination of [Zellij](https://zellij.dev) layouts and convenience `bash` scripts that creates an IDE-like layout environment. It mainly consists of a file picker (such as `yazi`) in one pane, and your editor of choice in the main pane. You can browse the file tree in your picker pane, and then any files that are selected or opened do so in the editor's pane.
 
 ![zide screenshot](https://github.com/user-attachments/assets/2aca061b-0fe2-4c09-993d-cc48b00ef260)

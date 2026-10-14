@@ -10,6 +10,43 @@ layout {
         compact_bar size=1
     }
 
+    // Collapse and expand the picker.
+    //
+    // Zellij has no "hide this pane" action, and a pane declared with an
+    // explicit size is fixed: `zellij action resize` on the picker returns 0 and
+    // moves nothing. Swap layouts are the supported way to restate the same
+    // panes at different sizes, so the collapsed sidebar is a layout rather than
+    // a resize. Alt+] (NextSwapLayout) collapses, Alt+[ (PreviousSwapLayout)
+    // brings it back, and zellij names the active one in the status bar, so the
+    // state is always visible.
+    //
+    // Listed first so the first Alt+] is the collapse. A swap layout rehouses
+    // the panes a tab already has and cannot add or drop any, which is why the
+    // picker goes to size=2 rather than away: it is the narrowest zellij will
+    // draw while leaving an edge to aim at. yazi keeps running at that width and
+    // redraws when it is expanded again. The bar counts as a pane, so the
+    // picker+editor layout above is the exact_panes=3 case.
+    swap_tiled_layout name="collapsed" {
+        tab exact_panes=3 {
+            pane split_direction="vertical" {
+                filepicker size=2 name="picker"
+                editor
+            }
+            compact_bar size=1
+        }
+
+        tab min_panes=4 {
+            pane split_direction="vertical" {
+                filepicker size=2 name="picker"
+                pane split_direction="horizontal" {
+                    editor size="75%"
+                    pane
+                }
+            }
+            compact_bar size=1
+        }
+    }
+
     swap_tiled_layout name="compact" {
         tab exact_panes=4 {
             pane split_direction="vertical" {
