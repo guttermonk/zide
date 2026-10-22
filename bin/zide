@@ -111,12 +111,18 @@ fi
 # Optional params
 # 
 # Working directory to open in, defaults to pwd
-cwd="$(cd ${1:-$(pwd)} && pwd) "
+#
+# Quoted, and with no trailing space: a target like "~/Delta Gear/Website/www
+# subdomain" was word-split into two arguments, `cd` bailed with "too many
+# arguments", and $cwd came back as the lone space the line used to append. The
+# unquoted `pushd $cwd` below then saw no argument at all, so zellij opened in
+# whatever directory the terminal happened to start in rather than the project.
+cwd="$(cd "${1:-$(pwd)}" && pwd)"
 # Available layouts can be found in the zide layouts/ directory
 layout=${2:-${ZIDE_DEFAULT_LAYOUT:-"default"}} 
 # Default session/tab name to the basename of the provided dir if -N flag set
 if [[ "${name}" == "__basename__" ]]; then
-  name="$(basename ${cwd})"
+  name="$(basename "${cwd}")"
 fi
 
 # Export location of the zide project files for further use
@@ -128,13 +134,13 @@ export ZIDE_LAYOUT_DIR="${ZIDE_LAYOUT_DIR:-${ZIDE_DIR}/layouts}"
 
 layout_path="${ZIDE_LAYOUT_DIR}/${layout}"
 if [ -n "$ZELLIJ" ]; then
-  zellij action new-tab --cwd $cwd --layout "${layout_path}"
+  zellij action new-tab --cwd "${cwd}" --layout "${layout_path}"
   zide-rename
 else
   # There's a bug when using zellij options --default-cwd where the CWD isn't working for floating
   # panes defined in the layout, so instead we'll use pushd to change the working dir before
   # starting zellij, and change it back when we exit
-  pushd $cwd > /dev/null
+  pushd "${cwd}" > /dev/null
     # A name means "open or resume this session", not "always build a new one".
     #
     # --help has always said -n names the session when starting from outside
